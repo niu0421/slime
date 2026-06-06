@@ -25,12 +25,18 @@ from .cp_utils import (
 logger = logging.getLogger(__name__)
 
 
+_MB_SEQ_LOG_COUNTERS: dict[str, int] = {}
+
+
 def get_batch(
     data_iterator: "DataIterator",
     keys: Sequence[str],
     pad_multiplier: int = 128,
     qkv_format: str = "thd",
     allgather_cp: bool = False,
+    *,
+    log_mb_seq_info: bool = False,
+    log_mb_seq_phase: str = "actor_train",
 ) -> dict[str, torch.Tensor | PackedSeqParams | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -63,6 +69,9 @@ def get_batch(
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
+
+    if log_mb_seq_info:
+        _log_mb_seq_info(tokens, log_mb_seq_phase, qkv_format, allgather_cp)
 
     cp_size = mpu.get_context_parallel_world_size()
     cp_rank = mpu.get_context_parallel_rank()
@@ -174,6 +183,33 @@ def get_batch(
         batch["multimodal_train_inputs"] = multimodal_data
 
     return batch
+
+
+def _log_mb_seq_info(tokens, phase, qkv_format, allgather_cp):
+    _MB_SEQ_LOG_COUNTERS[phase] = _MB_SEQ_LOG_COUNTERS.get(phase, 0) + 1
+    mb_index = _MB_SEQ_LOG_COUNTERS[phase]
+
+    sample_lengths = [t.size(0) for t in tokens]
+    num_samples = len(sample_lengths)
+    total_tokens = sum(sample_lengths)
+    max_len = max(sample_lengths) if sample_lengths else 0
+    min_len = min(sample_lengths) if sample_lengths else 0
+    avg_len = total_tokens / num_samples if num_samples > 0 else 0
+
+    global_rank = dist.get_rank()
+    dp_rank = mpu.get_data_parallel_rank(with_context_parallel=True)
+    dp_size = mpu.get_data_parallel_world_size(with_context_parallel=True)
+    tp_rank = mpu.get_tensor_model_parallel_rank()
+    tp_size = mpu.get_tensor_model_parallel_world_size()
+    rank_tag = f"rank{global_rank} DP{dp_rank}/{dp_size} TP{tp_rank}/{tp_size}"
+
+    logger.info(
+        f"[mb_seq][{rank_tag}][{phase} MB#{mb_index}] "
+        f"num_samples={num_samples} total_tokens={total_tokens} "
+        f"avg_len={avg_len:.1f} max_len={max_len} min_len={min_len} "
+        f"qkv_format={qkv_format} allgather_cp={allgather_cp} "
+        f"lengths={sample_lengths}"
+    )
 
 
 def gather_log_data(

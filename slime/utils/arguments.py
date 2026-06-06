@@ -1232,6 +1232,15 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--log-mb-seq-info",
+                action="store_true",
+                default=False,
+                help=(
+                    "Log per micro-batch sequence-length stats from get_batch(). "
+                    "Useful to diagnose seqlen imbalance across DP ranks."
+                ),
+            )
+            parser.add_argument(
                 "--dump-details",
                 type=str,
                 default=None,
