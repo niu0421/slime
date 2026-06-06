@@ -493,14 +493,37 @@ class RolloutManager:
         self.health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
+
+        stage_t0 = time.time()
         data, metrics = self._get_rollout_data(rollout_id=rollout_id)
+        t_get_data = time.time() - stage_t0
+
+        stage_t0 = time.time()
         self._save_debug_rollout_data(data, rollout_id=rollout_id, evaluation=False)
+        t_save_debug = time.time() - stage_t0
+
         _log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         if self.args.debug_rollout_only:
             # if debug rollout only, we don't convert samples to train data and directly return
             return
-        data = self._convert_samples_to_train_data(data)
-        return self._split_train_data_by_dp(data)
+
+        stage_t0 = time.time()
+        train_data = self._convert_samples_to_train_data(data)
+        t_convert = time.time() - stage_t0
+
+        stage_t0 = time.time()
+        split = self._split_train_data_by_dp(train_data)
+        t_split_dp = time.time() - stage_t0
+
+        _log_rollout_stage_breakdown(
+            rollout_id,
+            total=time.time() - start_time,
+            get_data=t_get_data,
+            save_debug=t_save_debug,
+            convert=t_convert,
+            split_dp=t_split_dp,
+        )
+        return split
 
     def eval(self, rollout_id):
         if self.args.debug_train_only:
@@ -1200,6 +1223,14 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
     logging_utils.log(args, log_dict, step_key="eval/step")
 
     return log_dict
+
+
+def _log_rollout_stage_breakdown(rollout_id, *, total, get_data, save_debug, convert, split_dp):
+    logger.info(
+        f"[rollout_stage][rollout_id={rollout_id}] "
+        f"total={total:.3f}s get_data={get_data:.3f}s save_debug={save_debug:.3f}s "
+        f"convert={convert:.3f}s split_dp={split_dp:.3f}s"
+    )
 
 
 def _log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
